@@ -11,6 +11,7 @@ pub type NodeId = u64;
 pub type Term = u64;
 pub type LogEntry = u64;
 
+// A Raft node
 pub struct RaftNode {
     id: NodeId,
     log: Vec<LogEntry>,
