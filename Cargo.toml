@@ -1,0 +1,12 @@
+[package]
+name = "rusty-raft"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+prusti-contracts = { git = "https://github.com/viperproject/prusti-dev.git" }
+fxhash = {git = "https://github.com/cbreeden/fxhash"}
