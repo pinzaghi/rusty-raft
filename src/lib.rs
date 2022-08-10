@@ -1,4 +1,5 @@
+#![feature(box_patterns)]
+
 pub mod config;
-pub mod network;
 pub mod raft;
-pub mod impl_network;
+pub mod log;

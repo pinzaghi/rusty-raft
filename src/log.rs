@@ -5,10 +5,16 @@ use std::mem;
 
 use prusti_contracts::*;
 
-use crate::ListElement;
+use crate::raft::Term;
+
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
+pub struct LogEntry {
+    pub term: Term, 
+    pub entry: usize
+}
 
 pub enum TrustedOption {
-    Some(ListElement),
+    Some(LogEntry),
     None,
 }
 
@@ -29,7 +35,7 @@ impl TrustedOption {
 
     #[pure]
     #[requires(self.is_some())]
-    pub fn peek(&self) -> ListElement {
+    pub fn peek(&self) -> LogEntry {
         match self {
             TrustedOption::Some(val) => *val,
             TrustedOption::None => unreachable!(),
@@ -38,7 +44,7 @@ impl TrustedOption {
 
 }
 
-pub struct List {
+pub struct Log {
     head: Link,
 }
 
@@ -48,7 +54,7 @@ enum Link {
 }
 
 struct Node {
-    elem: ListElement,
+    elem: LogEntry,
     next: Link,
 }
 
@@ -63,7 +69,7 @@ fn replace(dest: &mut Link, src: Link) -> Link {
 }
 
 
-impl List {
+impl Log {
 
     #[pure]
     pub fn len(&self) -> usize {
@@ -72,13 +78,13 @@ impl List {
 
     #[pure]
     #[requires(0 <= index && index < self.len())]
-    pub fn lookup(&self, index: usize) -> ListElement {
+    pub fn lookup(&self, index: usize) -> LogEntry {
         self.head.lookup(index)
     }
 
     #[ensures(result.len() == 0)]
     pub fn new() -> Self {
-        List {
+        Log {
             head: Link::Empty
         }
     }
@@ -87,7 +93,7 @@ impl List {
     #[ensures(self.lookup(0) == old(elem))]
     #[ensures(forall(|i: usize| (1 <= i && i < self.len()) ==>
         old(self.lookup(i-1)) == self.lookup(i)))]
-    pub fn push(&mut self, elem: ListElement) {
+    pub fn push(&mut self, elem: LogEntry) {
         let new_node = Box::new(Node {
             elem: elem,
             next: replace(&mut self.head, Link::Empty),
@@ -140,7 +146,7 @@ impl Link {
 
     #[pure]
     #[requires(0 <= index && index < self.len())]
-    pub fn lookup(&self, index: usize) -> ListElement {
+    pub fn lookup(&self, index: usize) -> LogEntry {
         match self {
             Link::Empty => unreachable!(),
             Link::More(box node) => {
