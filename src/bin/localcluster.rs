@@ -22,7 +22,7 @@ fn main() {
 
     assert!(n0.is_candidate());
 
-    let request_vote_msgs = n0.request_vote();
+    //let request_vote_msgs = n0.request_vote();
 
     //broadcast_messages(nodes, request_vote_msgs);
 

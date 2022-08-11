@@ -127,7 +127,6 @@ impl Link {
 
     #[pure]
     #[ensures(!self.is_empty() ==> result > 0)]
-    #[ensures(self.is_empty() ==> result == 0)] // BUGFIX, remove
     #[ensures(result >= 0)]
     fn len(&self) -> usize {
         match self {
@@ -160,5 +159,3 @@ impl Link {
     }
 
 }
-
-fn main(){}

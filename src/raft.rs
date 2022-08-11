@@ -1,8 +1,9 @@
 use std::option::Option;
 use std::hash::Hash;
 use std::hash::BuildHasher;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::cmp;
+use std::borrow::Borrow;
 
 use fxhash::{FxHashSet, FxHashMap, FxHasher};
 
@@ -55,22 +56,61 @@ where
     #[ensures(result ==> self.len() == old(self.len())+1)]
     #[ensures(!result ==> self.len() == old(self.len()))]
     pub fn insert(&mut self, value: T) -> bool;
+
+    #[pure]
+    #[ensures(result ==> matches!(self.get(value), Some(value)))]
+    //#[trusted]
+    pub fn contains<Q: ?Sized>(&self, value: &Q) -> bool
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq;
+
+    #[pure]
+    //#[trusted]
+    pub fn get<Q: ?Sized>(&self, value: &Q) -> Option<&T>
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq;
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[extern_spec]
+impl<K, V, S> HashMap<K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    #[pure]
+    #[ensures(result ==> matches!(self.get(k), Some(_)))]
+    pub fn contains_key<Q: ?Sized>(&self, k: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq;
+
+    #[pure]
+    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq;
+}
+
+#[trusted]
+#[requires(map.contains_key(key))]
+fn get_and_unwrap<'a, K: Eq + Hash, V>(map: &'a FxHashMap<K, V>, key: &'a K) -> &'a V {
+    map.get(key).unwrap()
+}
+
+#[derive(PartialEq, Eq)]
 pub enum State {
     Follower,
     Candidate,
     Leader
 }
 
-#[derive(Hash, PartialEq, Eq)]
 pub enum Message {
     RequestVoteRequest(RequestVoteRequestPayload),
     AppendEntriesRequest(AppendEntriesRequestPayload),
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct RequestVoteRequestPayload {
     term: Term, 
     last_log_term: Term, 
@@ -79,7 +119,6 @@ pub struct RequestVoteRequestPayload {
     dest: NodeId
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct AppendEntriesRequestPayload {
     term: Term, 
     prev_log_term: Term, 
@@ -112,6 +151,8 @@ impl RaftNode{
         }
     }
     
+    #[trusted]
+    #[ensures(forall(|i: usize| (0 <= i && i < config.len()) ==> self.next_index.contains_key(&i) && self.match_index.contains_key(&i)))]
     pub fn init(&mut self, config: &Config){
         self.config = config.clone();
 
@@ -124,7 +165,6 @@ impl RaftNode{
     #[requires(self.is_initialized())]
     #[requires(!self.is_leader())]
     pub fn timeout(&mut self){
-        //println!("Node {0} timeout", self.id);
         match self.state {
             State::Follower => self.become_candidate(),
             State::Candidate => self.become_candidate(),
@@ -132,53 +172,50 @@ impl RaftNode{
         }
     }
 
+    // This function returns the RequestVote message for a given destid
     #[requires(self.is_initialized())]
     #[requires(self.is_candidate())]
-    pub fn request_vote(&self) -> FxHashSet<Message> {
-        let mut messages = FxHashSet::<Message>::default();
-        
-        for destid in &self.config {
-            messages.insert(Message::RequestVoteRequest(RequestVoteRequestPayload{   
-                                                            term: self.current_term, 
-                                                            last_log_term: last_term(&self.log), 
-                                                            last_log_index: 0,
-                                                            dest: destid.clone(),
-                                                            source: self.id
-                                                        }));
-        }
-        messages
+    pub fn request_vote(&self, destid: &NodeId) -> Message {
+        let mut message = Message::RequestVoteRequest(
+                                        RequestVoteRequestPayload{   
+                                            term: self.current_term, 
+                                            last_log_term: last_term(&self.log), 
+                                            last_log_index: 0,
+                                            dest: destid.clone(),
+                                            source: self.id
+                                        }
+                                    );
+        message
     }
 
     #[requires(self.is_initialized())]
     #[requires(self.is_leader())]
-    pub fn append_entries(&self) -> FxHashSet<Message> {
-        let mut messages = FxHashSet::<Message>::default();
+    #[requires(self.is_valid_id(destid))]
+    pub fn append_entries(&self, destid: &NodeId) -> Message {
 
-        for destid in &self.config {
-
-            let m_prev_log_index = self.next_index.get(destid).unwrap()-1;
-            let mut m_prev_log_term = 0;
-            if m_prev_log_index > 0 {
-                m_prev_log_term = self.log.lookup(m_prev_log_index).term;
-            }
-            
-            let last_entry = cmp::min(self.log.len(), self.next_index.get(destid).unwrap().clone());
-            let c_index =  cmp::min(last_entry, self.commit_index);
-            
-            let m_entry = self.log.lookup(last_entry).entry;
-
-            messages.insert(Message::AppendEntriesRequest(
-                                        AppendEntriesRequestPayload{   term: self.current_term, 
-                                            prev_log_term: m_prev_log_term, 
-                                            prev_log_index: m_prev_log_index,
-                                            entry: m_entry.clone(),
-                                            commit_index: c_index,
-                                            dest: destid.clone(),
-                                            source: self.id
-                                        }
-                                    ));
+        let m_prev_log_index = get_and_unwrap(&self.next_index, &destid)-1;
+        let mut m_prev_log_term = 0;
+        if m_prev_log_index > 0 {
+            m_prev_log_term = self.log.lookup(m_prev_log_index).term;
         }
-        messages
+        
+        let last_entry = cmp::min(self.log.len(), get_and_unwrap(&self.next_index, destid).clone());
+        let c_index =  cmp::min(last_entry, self.commit_index);
+        
+        let m_entry = self.log.lookup(last_entry).entry;
+
+        let message = Message::AppendEntriesRequest(
+                                    AppendEntriesRequestPayload{   term: self.current_term, 
+                                        prev_log_term: m_prev_log_term, 
+                                        prev_log_index: m_prev_log_index,
+                                        entry: m_entry.clone(),
+                                        commit_index: c_index,
+                                        dest: destid.clone(),
+                                        source: self.id
+                                    }
+                                );
+        
+        message
     }
 
     #[requires(self.is_initialized())]
@@ -213,6 +250,11 @@ impl RaftNode{
     #[pure]
     pub fn is_initialized(&self) -> bool{
         matches!(self.initialized,true)
+    }
+
+    #[pure]
+    pub fn is_valid_id(&self, id: &NodeId) -> bool{
+        self.config.contains(id)
     }
 
     #[ensures(self.votes_granted.len() == 0)]
@@ -255,10 +297,14 @@ impl RaftNode{
 
 #[pure]
 fn last_term(log: &Log) -> Term {
-    match log.lookup(log.len()) {
-        Empty => 0,
-        LogEntry{term, entry} => { 
-            term
+    if log.len() > 0 {
+        match log.lookup(log.len()-1) {
+            LogEntry{term, entry} => { 
+                term
+            },
+            _ => unreachable!(),
         }
+    }else{
+        0
     }
 }
