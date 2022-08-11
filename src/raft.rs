@@ -57,16 +57,16 @@ where
     #[ensures(!result ==> self.len() == old(self.len()))]
     pub fn insert(&mut self, value: T) -> bool;
 
+    #[trusted]
     #[pure]
     #[ensures(result ==> matches!(self.get(value), Some(value)))]
-    //#[trusted]
     pub fn contains<Q: ?Sized>(&self, value: &Q) -> bool
     where
         T: Borrow<Q>,
         Q: Hash + Eq;
 
+    #[trusted]
     #[pure]
-    //#[trusted]
     pub fn get<Q: ?Sized>(&self, value: &Q) -> Option<&T>
     where
         T: Borrow<Q>,
@@ -79,6 +79,7 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
+    #[trusted]
     #[pure]
     #[ensures(result ==> matches!(self.get(k), Some(_)))]
     pub fn contains_key<Q: ?Sized>(&self, k: &Q) -> bool
@@ -86,11 +87,22 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq;
 
+    #[trusted]
     #[pure]
     pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
         Q: Hash + Eq;
+}
+
+#[extern_spec]
+mod std {
+    mod cmp {
+        use prusti_contracts::*;
+        
+        //#[ensures(result >= v1 && result >= v2)]
+        pub fn min<T: Ord>(v1: T, v2: T) -> T;
+    }
 }
 
 #[trusted]
@@ -152,7 +164,6 @@ impl RaftNode{
     }
     
     #[trusted]
-    #[ensures(forall(|i: usize| (0 <= i && i < config.len()) ==> self.next_index.contains_key(&i) && self.match_index.contains_key(&i)))]
     pub fn init(&mut self, config: &Config){
         self.config = config.clone();
 
@@ -160,6 +171,7 @@ impl RaftNode{
             self.next_index.insert(nid.clone(), 1);
             self.match_index.insert(nid.clone(), 0);
         }
+        self.initialized = true;
     }
 
     #[requires(self.is_initialized())]
@@ -199,7 +211,7 @@ impl RaftNode{
             m_prev_log_term = self.log.lookup(m_prev_log_index).term;
         }
         
-        let last_entry = cmp::min(self.log.len(), get_and_unwrap(&self.next_index, destid).clone());
+        let last_entry = self.last_entry(destid);
         let c_index =  cmp::min(last_entry, self.commit_index);
         
         let m_entry = self.log.lookup(last_entry).entry;
@@ -248,6 +260,7 @@ impl RaftNode{
     }
 
     #[pure]
+    //#[ensures(forall(|i: usize| (0 <= i) ==> self.next_index.contains_key(&i) && self.match_index.contains_key(&i)))]
     pub fn is_initialized(&self) -> bool{
         matches!(self.initialized,true)
     }
@@ -292,6 +305,10 @@ impl RaftNode{
             self.state = State::Follower;
             self.voted_for = None;
         }
+    }
+
+    fn last_entry(&self, destid: &NodeId) -> LogIndex {
+        cmp::min(self.log.len(), *get_and_unwrap(&self.next_index, &destid))
     }
 }
 
