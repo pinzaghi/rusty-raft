@@ -120,6 +120,7 @@ pub enum State {
 
 pub enum Message {
     RequestVoteRequest(RequestVoteRequestPayload),
+    RequestVoteResponse(RequestVoteResponsePayload),
     AppendEntriesRequest(AppendEntriesRequestPayload),
 }
 
@@ -127,6 +128,13 @@ pub struct RequestVoteRequestPayload {
     term: Term, 
     last_log_term: Term, 
     last_log_index: LogIndex, 
+    source: NodeId, 
+    dest: NodeId
+}
+
+pub struct RequestVoteResponsePayload {
+    term: Term, 
+    vote_granted: bool,
     source: NodeId, 
     dest: NodeId
 }
@@ -184,20 +192,19 @@ impl RaftNode{
         }
     }
 
-    // This function returns the RequestVote message for a given destid
+    // This function returns the RequestVote message to be send
     #[requires(self.is_initialized())]
     #[requires(self.is_candidate())]
     pub fn request_vote(&self, destid: &NodeId) -> Message {
-        let mut message = Message::RequestVoteRequest(
-                                        RequestVoteRequestPayload{   
-                                            term: self.current_term, 
-                                            last_log_term: last_term(&self.log), 
-                                            last_log_index: 0,
-                                            dest: destid.clone(),
-                                            source: self.id
-                                        }
-                                    );
-        message
+        Message::RequestVoteRequest(
+                    RequestVoteRequestPayload{   
+                        term: self.current_term, 
+                        last_log_term: last_term(&self.log), 
+                        last_log_index: 0,
+                        dest: destid.clone(),
+                        source: self.id
+                    }
+                )
     }
 
     #[requires(self.is_initialized())]
@@ -216,18 +223,17 @@ impl RaftNode{
         
         let m_entry = self.log.lookup(last_entry).entry;
 
-        let message = Message::AppendEntriesRequest(
-                                    AppendEntriesRequestPayload{   term: self.current_term, 
-                                        prev_log_term: m_prev_log_term, 
-                                        prev_log_index: m_prev_log_index,
-                                        entry: m_entry.clone(),
-                                        commit_index: c_index,
-                                        dest: destid.clone(),
-                                        source: self.id
-                                    }
-                                );
-        
-        message
+        Message::AppendEntriesRequest(
+                    AppendEntriesRequestPayload{   
+                        term: self.current_term, 
+                        prev_log_term: m_prev_log_term, 
+                        prev_log_index: m_prev_log_index,
+                        entry: m_entry.clone(),
+                        commit_index: c_index,
+                        dest: destid.clone(),
+                        source: self.id
+                    }
+                )
     }
 
     #[requires(self.is_initialized())]
@@ -236,6 +242,13 @@ impl RaftNode{
             Message::RequestVoteRequest(payload) => {
                 self.update_term(payload.term);
                 self.handle_requestvoterequest(payload);
+            },
+            Message::RequestVoteResponse(payload) => {
+                self.update_term(payload.term);
+                // Discard stale messages
+                if payload.term >= self.current_term {
+                    self.handle_requestvoteresponse(payload);
+                }
             },
             Message::AppendEntriesRequest(payload) => {
                 self.update_term(payload.term);
@@ -285,18 +298,35 @@ impl RaftNode{
         //println!("Size is {0}", self.votes_granted.len());
     }
 
-    fn handle_requestvoterequest(&mut self, m: RequestVoteRequestPayload){
-        let log_ok =  m.last_log_term > last_term(&self.log) || 
-                      (m.last_log_term == last_term(&self.log) && m.last_log_index >= self.log.len());
+    fn handle_requestvoterequest(&mut self, m: RequestVoteRequestPayload) -> Message {
+        let log_ok = m.last_log_term > last_term(&self.log) || 
+                     (m.last_log_term == last_term(&self.log) && m.last_log_index >= self.log.len());
 
-        let grant_vote =    m.term == self.current_term 
-                            && log_ok 
-                            && (matches!(self.voted_for,None) || self.voted_for.unwrap() == m.source);
+        let grant_vote = m.term == self.current_term 
+                         && log_ok 
+                         && (matches!(self.voted_for,None) || self.voted_for.unwrap() == m.source);
+
+        if grant_vote {
+            self.voted_for = Some(m.source);
+        }     
+
+        Message::RequestVoteResponse(RequestVoteResponsePayload{
+            term: self.current_term,
+            vote_granted: grant_vote,
+            source: self.id,
+            dest: m.source.clone()
+        })
+    }
+
+    fn handle_requestvoteresponse(&self, m: RequestVoteResponsePayload){
+
     }
 
     fn handle_appendentriesrequest(&self, m: AppendEntriesRequestPayload){
         
     }
+
+    
 
     // We jump the term if necessary
     fn update_term(&mut self, newterm: Term){
