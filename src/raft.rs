@@ -211,7 +211,7 @@ impl RaftNode{
     #[requires(self.is_leader())]
     #[requires(self.is_valid_id(destid))]
     pub fn append_entries(&self, destid: &NodeId) -> Message {
-
+        assert!(self.next_index.contains_key(destid));
         let m_prev_log_index = get_and_unwrap(&self.next_index, &destid)-1;
         let mut m_prev_log_term = 0;
         if m_prev_log_index > 0 {
@@ -273,7 +273,7 @@ impl RaftNode{
     }
 
     #[pure]
-    #[ensures(forall(|i: usize| (0 <= i) ==> self.next_index.contains_key(&i) && self.match_index.contains_key(&i)))]
+    //#[ensures(forall(|i: usize| (0 <= i) ==> self.next_index.contains_key(&i) && self.match_index.contains_key(&i)))]
     pub fn is_initialized(&self) -> bool{
         matches!(self.initialized,true)
     }
@@ -338,6 +338,7 @@ impl RaftNode{
     }
 
     fn last_entry(&self, destid: &NodeId) -> LogIndex {
+        assert!(self.next_index.contains_key(destid));
         cmp::min(self.log.len(), *get_and_unwrap(&self.next_index, &destid))
     }
 }
