@@ -7,7 +7,7 @@ use prusti_contracts::*;
 
 use crate::raft::Term;
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct LogEntry {
     pub term: Term, 
     pub entry: usize

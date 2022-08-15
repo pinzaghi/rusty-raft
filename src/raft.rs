@@ -241,7 +241,7 @@ impl RaftNode{
         match m {
             Message::RequestVoteRequest(payload) => {
                 self.update_term(payload.term);
-                self.handle_requestvoterequest(payload);
+                //self.handle_requestvoterequest(payload);
             },
             Message::RequestVoteResponse(payload) => {
                 self.update_term(payload.term);
@@ -273,7 +273,7 @@ impl RaftNode{
     }
 
     #[pure]
-    //#[ensures(forall(|i: usize| (0 <= i) ==> self.next_index.contains_key(&i) && self.match_index.contains_key(&i)))]
+    #[ensures(forall(|i: usize| (0 <= i) ==> self.next_index.contains_key(&i) && self.match_index.contains_key(&i)))]
     pub fn is_initialized(&self) -> bool{
         matches!(self.initialized,true)
     }
@@ -310,14 +310,16 @@ impl RaftNode{
             self.voted_for = Some(m.source);
         }     
 
-        Message::RequestVoteResponse(RequestVoteResponsePayload{
-            term: self.current_term,
-            vote_granted: grant_vote,
-            source: self.id,
-            dest: m.source.clone()
-        })
+        Message::RequestVoteResponse(
+                    RequestVoteResponsePayload{
+                        term: self.current_term,
+                        vote_granted: grant_vote,
+                        source: self.id,
+                        dest: m.source.clone()
+                    }
+        )   
     }
-
+    
     fn handle_requestvoteresponse(&self, m: RequestVoteResponsePayload){
 
     }
@@ -325,8 +327,6 @@ impl RaftNode{
     fn handle_appendentriesrequest(&self, m: AppendEntriesRequestPayload){
         
     }
-
-    
 
     // We jump the term if necessary
     fn update_term(&mut self, newterm: Term){
