@@ -5,12 +5,12 @@ use std::mem;
 
 use prusti_contracts::*;
 
-use crate::raft::Term;
+use crate::raft::{Term, Value};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct LogEntry {
     pub term: Term, 
-    pub entry: usize
+    pub value: Value
 }
 
 pub enum TrustedOption {
