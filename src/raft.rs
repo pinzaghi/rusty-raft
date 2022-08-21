@@ -3,6 +3,7 @@ use std::cmp;
 use std::hash::Hash;
 
 use fxhash::{FxHashSet, FxHashMap};
+use parse_display::{Display};
 
 use crate::log::{Log, LogEntry};
 use crate::message::*;
@@ -17,7 +18,7 @@ pub type Value = usize;
 
 // A Raft node
 pub struct RaftNode {
-    pub id: NodeId,
+    id: NodeId,
     log: Log,
     state: State,
     current_term: Term,
@@ -32,7 +33,7 @@ pub struct RaftNode {
     initialized: bool
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Display)]
 pub enum State {
     Follower,
     Candidate,
@@ -65,9 +66,6 @@ impl RaftNode{
             votes_granted: FxHashSet::default(),
             next_index: FxHashMap::default(),
             match_index: FxHashMap::default(),
-            // last_log_index: 0,
-            // last_log_term: 0
-            // last_applied: 0,
             config: FxHashSet::default(),
             initialized: false,
         }
@@ -90,13 +88,17 @@ impl RaftNode{
     // Message handlers
     // #############################################
     #[requires(is_initialized(&self.match_index, &self.config))]
-    pub fn receive_message(&mut self, m: Message){
+    pub fn receive_message(&mut self, m: Message) -> Option<Message> {
+        assert!(self.initialized);
+
+        let mut result = None;
+
         match m {
             Message::RequestVoteRequest(payload) => {
                 self.update_term(payload.term);
 
                 if payload.term <= self.current_term {
-                    self.handle_requestvoterequest(payload);
+                    result = Some(self.handle_requestvoterequest(payload))
                 }
             },
             Message::RequestVoteResponse(payload) => {
@@ -111,7 +113,7 @@ impl RaftNode{
                 self.update_term(payload.term);
 
                 if payload.term <= self.current_term {
-                    self.handle_appendentriesrequest(payload);
+                    result = self.handle_appendentriesrequest(payload);
                 }
             },
             Message::AppendEntriesResponse(payload) => {
@@ -126,6 +128,8 @@ impl RaftNode{
         if self.is_leader() {
             self.advance_commit_index();
         }
+
+        result
         
     }
 
@@ -146,7 +150,7 @@ impl RaftNode{
                         term: self.current_term,
                         vote_granted: grant_vote,
                         source: self.id,
-                        dest: m.source.clone()
+                        dest: Address::Node(m.source.clone())
                     }
         )   
     }
@@ -162,7 +166,7 @@ impl RaftNode{
     }
 
     fn handle_appendentriesrequest(&mut self, m: AppendEntriesRequestPayload) -> Option<Message> {
-
+        
         let log_ok = m.prev_log_index == 0 ||
                            (m.prev_log_index > 0 && 
                             m.prev_log_index <= self.log.len() && 
@@ -189,7 +193,7 @@ impl RaftNode{
                             success: false,
                             match_index: 0,
                             source: self.id,
-                            dest: m.source.clone()
+                            dest: Address::Node(m.source.clone())
                         }
             ))
         // accept request
@@ -197,7 +201,8 @@ impl RaftNode{
             //already done with request
             let index = m.prev_log_index+1;
             let done_with_request = matches!(m.entry, None) || 
-                                          (self.log.len() >= index && 
+                                          (matches!(m.entry, Some(..)) &&
+                                           self.log.len() >= index && 
                                            self.log.lookup(index).term == m.entry.unwrap().term);
 
             // conflict: remove 1 entry
@@ -207,7 +212,7 @@ impl RaftNode{
 
             // no conflict: append entry
             let no_conflict = matches!(m.entry, Some(..)) && 
-                                    self.log.len() == index;
+                                    self.log.len() == m.prev_log_index;
 
             if done_with_request {
                 self.commit_index = m.commit_index;
@@ -223,7 +228,7 @@ impl RaftNode{
                                     success: true,
                                     match_index: m.prev_log_index+msg_entries_len,
                                     source: self.id,
-                                    dest: m.source.clone()
+                                    dest: Address::Node(m.source.clone())
                                 }
                     ))
             }else if conflict {
@@ -261,15 +266,21 @@ impl RaftNode{
 
     #[requires(is_initialized(&self.match_index, &self.config))]
     #[requires(!self.is_leader())]
-    pub fn timeout(&mut self){
+    pub fn timeout(&mut self) -> Message {
+        assert!(self.initialized);
+
         match self.state {
             State::Follower => self.become_candidate(),
             State::Candidate => self.become_candidate(),
             _ => unreachable!()
         }
+
+        self.request_vote()
     }
 
     pub fn restart(&mut self){
+        assert!(self.initialized);
+        
         self.state = State::Follower;
         self.votes_responded.clear();
         self.votes_granted.clear();
@@ -286,21 +297,23 @@ impl RaftNode{
 
     #[requires(self.is_leader())]
     pub fn client_request(&mut self, v: Value){
+        assert!(self.initialized);
         assert!(self.is_leader());
 
         self.log.push(LogEntry{term: self.current_term, value: v});
     }
 
-    // This function returns the RequestVote message to be send
     #[requires(is_initialized(&self.match_index, &self.config))]
     #[requires(self.is_candidate())]
-    pub fn request_vote(&self, destid: &NodeId) -> Message {
+    pub fn request_vote(&self) -> Message {
+        assert!(self.initialized);
+
         Message::RequestVoteRequest(
                     RequestVoteRequestPayload{   
                         term: self.current_term, 
                         last_log_term: Self::last_term(&self.log), 
                         last_log_index: 0,
-                        dest: destid.clone(),
+                        dest: Address::Broadcast,
                         source: self.id
                     }
                 )
@@ -309,28 +322,35 @@ impl RaftNode{
     #[requires(is_initialized(&self.next_index, &self.config))]
     #[requires(self.is_leader())]
     #[requires(self.is_valid_id(destid))]
-    pub fn append_entries(&self, destid: &NodeId) -> Message {
+    pub fn append_entries(&mut self, destid: &NodeId) -> Message {
+        assert!(self.initialized);
         assert!(self.next_index.contains_key(destid));
+        assert!(self.is_leader());
 
         let m_prev_log_index = get_and_unwrap(&self.next_index, &destid)-1;
         let mut m_prev_log_term = 0;
         if m_prev_log_index > 0 {
             m_prev_log_term = self.log.lookup(m_prev_log_index).term;
         }
-        
-        let last_entry = self.last_entry(destid);
+        let dest_next_index = *get_and_unwrap(&self.next_index, &destid);
+        let last_entry = cmp::min(self.log.len(), dest_next_index);
         let c_index =  cmp::min(last_entry, self.commit_index);
-        
-        let m_entry = self.log.lookup(last_entry);
 
+        let mut m_entry = None;
+
+        // We send at most 1 entry
+        if dest_next_index == last_entry {
+            m_entry = Some(self.log.lookup(last_entry));
+        }
+        
         Message::AppendEntriesRequest(
                     AppendEntriesRequestPayload{   
                         term: self.current_term, 
                         prev_log_term: m_prev_log_term, 
                         prev_log_index: m_prev_log_index,
-                        entry: Some(m_entry.clone()),
+                        entry: m_entry,
                         commit_index: c_index,
-                        dest: destid.clone(),
+                        dest: Address::Broadcast,
                         source: self.id
                     }
                 )
@@ -352,13 +372,12 @@ impl RaftNode{
         // Workaround for FxHashSet with prusti
         self.votes_responded.clear();
         self.votes_granted.clear();
-        //println!("Size is {0}", self.votes_granted.len());
     }
 
     fn become_leader(&mut self){
-        assert!(self.is_candidate());
+        assert!(self.is_candidate() || self.is_leader());
 
-        if self.is_quorum(&self.votes_granted) {
+        if self.is_candidate() && self.is_quorum(&self.votes_granted) {
             self.state = State::Leader;
 
             // Move next index for each node
@@ -375,21 +394,25 @@ impl RaftNode{
 
     #[requires(self.is_leader())]
     fn advance_commit_index(&mut self) {
-
         let mut maybe_max_index : Option<LogIndex> = None;
 
-        for idx in 0..self.log.len() {
+        // 1..n+1 iterate n elements
+        for idx in 1..self.log.len()+1 {
             let mut agree_set = FxHashSet::<NodeId>::default();
 
-            for (nid, nidx) in &self.match_index {
-                agree_set.insert(nid.clone());
+            agree_set.insert(self.id);
+
+            for (nid, node_match_idx) in &self.match_index {
+                if node_match_idx >= &idx {
+                    agree_set.insert(nid.clone());
+                }
             }
 
             if self.is_quorum(&agree_set) {
                 maybe_max_index = Some(idx);
             }
         }
-
+        
         match maybe_max_index {
             None => {},
             Some(max_index) => {
@@ -429,15 +452,8 @@ impl RaftNode{
         }
     }
 
-    fn last_entry(&self, destid: &NodeId) -> LogIndex {
-        assert!(self.next_index.contains_key(destid));
-
-        cmp::min(self.log.len(), *get_and_unwrap(&self.next_index, &destid))
-    }
-
     fn is_quorum(&self, node_set: &FxHashSet<NodeId>) -> bool {
-        assert!(node_set.is_subset(&self.config));
-
+        assert!(node_set.is_subset(&self.config), "{0} is not subset of {1}", node_set.len(), self.config.len());
         node_set.len() > self.config.len()/2
     }
 
@@ -445,14 +461,31 @@ impl RaftNode{
     fn last_term(log: &Log) -> Term {
         if log.len() > 0 {
             match log.lookup(log.len()-1) {
-                LogEntry{term, value} => { 
+                LogEntry{term, value: _} => { 
                     term
-                },
-                _ => unreachable!(),
+                }
             }
         }else{
             0
         }
     }
+
+    // Functions for testing
+    pub fn current_term(&self) -> Term {
+        self.current_term
+    }
+
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+
+    pub fn log(&self) -> Log {
+        self.log.clone()
+    }
+
+    pub fn commit_index(&self) -> LogIndex {
+        self.commit_index
+    }
+    
 }
 

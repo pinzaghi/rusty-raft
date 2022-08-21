@@ -44,15 +44,19 @@ impl TrustedOption {
 
 }
 
+
+#[derive(Clone)]
 pub struct Log {
     head: Link,
 }
 
+#[derive(Clone)]
 enum Link {
     Empty,
     More(Box<Node>),
 }
 
+#[derive(Clone)]
 struct Node {
     elem: LogEntry,
     next: Link,
@@ -68,7 +72,6 @@ fn replace(dest: &mut Link, src: Link) -> Link {
     mem::replace(dest, src)
 }
 
-
 impl Log {
 
     #[pure]
@@ -79,7 +82,8 @@ impl Log {
     #[pure]
     #[requires(0 <= index && index < self.len())]
     pub fn lookup(&self, index: usize) -> LogEntry {
-        self.head.lookup(index)
+        // index-1 because Raft log index start in 1
+        self.head.lookup(index-1)
     }
 
     #[ensures(result.len() == 0)]
