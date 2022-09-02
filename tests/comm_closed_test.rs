@@ -2,6 +2,7 @@ use fxhash::FxHashSet;
 use std::env;
 use rusty_raft::raft::{RaftNode, NodeId};
 
+// We break Communication Closure by making a process receive and AppendEntriesRequest before any election
 #[test]
 fn node_is_elected() {
 
@@ -22,14 +23,16 @@ fn node_is_elected() {
 
     // n0 timeouts and wants to become leader
     let msg_request_vote = n0.timeout();
+    assert!(n0.is_candidate());
 
     let msg_request_vote_response0 = n0.receive_message(msg_request_vote.clone());
     let msg_request_vote_response1 = n1.receive_message(msg_request_vote.clone());
-    let msg_request_vote_response2 = n2.receive_message(msg_request_vote.clone());
+    // Message to N2 is lost
+    //let msg_request_vote_response2 = n2.receive_message(msg_request_vote.clone());
 
     n0.receive_message(msg_request_vote_response0.unwrap());
     n0.receive_message(msg_request_vote_response1.unwrap());
-    n0.receive_message(msg_request_vote_response2.unwrap());
+    //n0.receive_message(msg_request_vote_response2.unwrap());
 
     assert!(n0.is_leader());
     assert!(n1.is_follower());
@@ -37,15 +40,15 @@ fn node_is_elected() {
 
     assert!(n0.current_term() == 1);
     assert!(n1.current_term() == 1);
-    assert!(n2.current_term() == 1);
+    //assert!(n2.current_term() == 1);
 
-    // Client request, everyone appends to log
+    // Client request
     n0.client_request(42);
     let msg_append1 = n0.append_entries(&n1.id());
     let msg_append2 = n0.append_entries(&n2.id());
     n1.receive_message(msg_append1);
     n2.receive_message(msg_append2);
-    
+
     // Heartbeat 1, followers reply accepting previous entry
     let msg_append1 = n0.append_entries(&n1.id());
     let msg_append2 = n0.append_entries(&n2.id());

@@ -84,9 +84,6 @@ impl RaftNode{
         self.initialized = true;
     }
 
-    // #############################################
-    // Message handlers
-    // #############################################
     #[requires(is_initialized(&self.match_index, &self.config))]
     pub fn receive_message(&mut self, m: Message) -> Option<Message> {
         assert!(self.initialized);
@@ -95,159 +92,166 @@ impl RaftNode{
 
         match m {
             Message::RequestVoteRequest(payload) => {
-                self.update_term(payload.term);
-
-                if payload.term <= self.current_term {
-                    result = Some(self.handle_requestvoterequest(payload))
-                }
+                result = self.handle_requestvoterequest(payload);
             },
             Message::RequestVoteResponse(payload) => {
-                self.update_term(payload.term);
-
-                if payload.term == self.current_term {
-                    self.handle_requestvoteresponse(payload);
-                    self.become_leader();
-                }
+                self.handle_requestvoteresponse(payload);
             },
             Message::AppendEntriesRequest(payload) => {
-                self.update_term(payload.term);
-
-                if payload.term <= self.current_term {
-                    result = self.handle_appendentriesrequest(payload);
-                }
+                result = self.handle_appendentriesrequest(payload);
             },
             Message::AppendEntriesResponse(payload) => {
-                self.update_term(payload.term);
-
-                if payload.term == self.current_term {
-                    self.handle_appendentriesresponse(payload);
-                }
+                self.handle_appendentriesresponse(payload);
             },
-        }
-
-        if self.is_leader() {
-            self.advance_commit_index();
         }
 
         result
-        
     }
 
-    fn handle_requestvoterequest(&mut self, m: RequestVoteRequestPayload) -> Message {
-        let log_ok = m.last_log_term > Self::last_term(&self.log) || 
-                     (m.last_log_term == Self::last_term(&self.log) && m.last_log_index >= self.log.len());
+    // #############################################
+    // Message handlers
+    // #############################################
+    fn handle_requestvoterequest(&mut self, m: RequestVoteRequestPayload) -> Option<Message> {
+        
+        self.update_term(m.term);
 
-        let grant_vote = m.term == self.current_term 
-                         && log_ok 
-                         && (matches!(self.voted_for,None) || self.voted_for.unwrap() == m.source);
+        let mut result = None;
 
-        if grant_vote {
-            self.voted_for = Some(m.source);
-        }     
+        if m.term <= self.current_term {
+            let log_ok = m.last_log_term > Self::last_term(&self.log) || 
+                        (m.last_log_term == Self::last_term(&self.log) && m.last_log_index >= self.log.len());
 
-        Message::RequestVoteResponse(
-                    RequestVoteResponsePayload{
-                        term: self.current_term,
-                        vote_granted: grant_vote,
-                        source: self.id,
-                        dest: Address::Node(m.source.clone())
-                    }
-        )   
+            let grant_vote = m.term == self.current_term 
+                            && log_ok 
+                            && (matches!(self.voted_for,None) || self.voted_for.unwrap() == m.source);
+
+            if grant_vote {
+                self.voted_for = Some(m.source);
+            }
+
+            result = Some(Message::RequestVoteResponse(
+                            RequestVoteResponsePayload{
+                                        term: self.current_term,
+                                        vote_granted: grant_vote,
+                                        source: self.id,
+                                        dest: Address::Node(m.source.clone())
+                                    }
+                                )
+                    );
+        }
+
+        result
+
     }
     
     fn handle_requestvoteresponse(&mut self, m: RequestVoteResponsePayload){
+
+        self.update_term(m.term);
+
         if m.term == self.current_term {
             self.votes_responded.insert(m.source);
 
             if m.vote_granted {
                 self.votes_granted.insert(m.source);
             }
+
+            self.become_leader();
         }
     }
 
     fn handle_appendentriesrequest(&mut self, m: AppendEntriesRequestPayload) -> Option<Message> {
+
+        let mut result = None;
+
+        self.update_term(m.term);
+
+        if m.term <= self.current_term {
         
-        let log_ok = m.prev_log_index == 0 ||
-                           (m.prev_log_index > 0 && 
-                            m.prev_log_index <= self.log.len() && 
-                            m.prev_log_term == self.log.lookup(m.prev_log_index).term);
-        
-        let reject_append = m.term < self.current_term || 
-                                  (m.term == self.current_term && 
-                                   self.is_follower() && 
-                                   !log_ok);
-
-        let accept_append = m.term == self.current_term && 
-                                  self.is_follower() &&
-                                  log_ok;
-        
-        // return to follower state
-        if m.term == self.current_term && self.is_candidate() {
-            self.state = State::Follower;
-            None
-        // reject request
-        }else if reject_append {
-            Some(Message::AppendEntriesResponse(
-                        AppendEntriesResponsePayload{
-                            term: self.current_term,
-                            success: false,
-                            match_index: 0,
-                            source: self.id,
-                            dest: Address::Node(m.source.clone())
-                        }
-            ))
-        // accept request
-        }else if accept_append{
-            //already done with request
-            let index = m.prev_log_index+1;
-            let done_with_request = matches!(m.entry, None) || 
-                                          (matches!(m.entry, Some(..)) &&
-                                           self.log.len() >= index && 
-                                           self.log.lookup(index).term == m.entry.unwrap().term);
-
-            // conflict: remove 1 entry
-            let conflict = matches!(m.entry, Some(..)) && 
-                                 self.log.len() >= index && 
-                                 self.log.lookup(index).term != m.entry.unwrap().term;
-
-            // no conflict: append entry
-            let no_conflict = matches!(m.entry, Some(..)) && 
-                                    self.log.len() == m.prev_log_index;
-
-            if done_with_request {
-                self.commit_index = m.commit_index;
-
-                let mut msg_entries_len = 0;
-                if matches!(m.entry, Some(..)) {
-                    msg_entries_len = 1;
-                }
-
-                Some(Message::AppendEntriesResponse(
-                    AppendEntriesResponsePayload{
-                                    term: self.current_term,
-                                    success: true,
-                                    match_index: m.prev_log_index+msg_entries_len,
-                                    source: self.id,
-                                    dest: Address::Node(m.source.clone())
-                                }
-                    ))
-            }else if conflict {
-                self.log.pop();
-                None
-            }else if no_conflict {
-                self.log.push(m.entry.unwrap());
-                None
-            }else{
-                None
-            }
+            let log_ok = m.prev_log_index == 0 ||
+                            (m.prev_log_index > 0 && 
+                                m.prev_log_index <= self.log.len() && 
+                                m.prev_log_term == self.log.lookup(m.prev_log_index).term);
             
-        }else{
-            None
+            let reject_append = m.term < self.current_term || 
+                                    (m.term == self.current_term && 
+                                    self.is_follower() && 
+                                    !log_ok);
+
+            let accept_append = m.term == self.current_term && 
+                                    self.is_follower() &&
+                                    log_ok;
+            
+            // return to follower state
+            if m.term == self.current_term && self.is_candidate() {
+                self.state = State::Follower;
+            // reject request
+            }else if reject_append {
+                result = Some(Message::AppendEntriesResponse(
+                                    AppendEntriesResponsePayload{
+                                        term: self.current_term,
+                                        success: false,
+                                        match_index: 0,
+                                        source: self.id,
+                                        dest: Address::Node(m.source.clone())
+                                    }
+                        ));
+            // accept request
+            }else if accept_append{
+                //already done with request
+                let index = m.prev_log_index+1;
+                let done_with_request = matches!(m.entry, None) || 
+                                            (matches!(m.entry, Some(..)) &&
+                                            self.log.len() >= index && 
+                                            self.log.lookup(index).term == m.entry.unwrap().term);
+
+                // conflict: remove 1 entry
+                let conflict = matches!(m.entry, Some(..)) && 
+                                    self.log.len() >= index && 
+                                    self.log.lookup(index).term != m.entry.unwrap().term;
+
+                // no conflict: append entry
+                let no_conflict = matches!(m.entry, Some(..)) && 
+                                        self.log.len() == m.prev_log_index;
+
+                if done_with_request {
+                    self.commit_index = m.commit_index;
+
+                    let mut msg_entries_len = 0;
+                    if matches!(m.entry, Some(..)) {
+                        msg_entries_len = 1;
+                    }
+
+                    result = Some(Message::AppendEntriesResponse(
+                                    AppendEntriesResponsePayload{
+                                                    term: self.current_term,
+                                                    success: true,
+                                                    match_index: m.prev_log_index+msg_entries_len,
+                                                    source: self.id,
+                                                    dest: Address::Node(m.source.clone())
+                                                }
+                                    ));
+                }else if conflict {
+                    self.log.pop();
+                }else if no_conflict {
+                    self.log.push(m.entry.unwrap());
+                }
+                
+            }
+
+            if self.is_leader() {
+                self.advance_commit_index();
+            }
+
         }
+
+        result
         
     }
 
     fn handle_appendentriesresponse(&mut self, m: AppendEntriesResponsePayload){
+
+        self.update_term(m.term);
+
         if m.term == self.current_term {
             if m.success {
                 self.next_index.insert(m.source, m.match_index+1);
@@ -257,6 +261,10 @@ impl RaftNode{
 
                 self.next_index.insert(m.source, cmp::max(old_next_index-1, 1));
             }
+        }
+
+        if self.is_leader() {
+            self.advance_commit_index();
         }
     }
 
